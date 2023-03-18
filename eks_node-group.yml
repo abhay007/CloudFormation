@@ -1,0 +1,122 @@
+AWSTemplateFormatVersion: 2010-09-09
+Description: 'EKS Managed Nodes (SSH access: true)'
+Mappings:
+  ServicePrincipalPartitionMap:
+    aws:
+      EC2: ec2.amazonaws.com
+      EKS: eks.amazonaws.com
+      EKSFargatePods: eks-fargate-pods.amazonaws.com
+    aws-cn:
+      EC2: ec2.amazonaws.com.cn
+      EKS: eks.amazonaws.com
+      EKSFargatePods: eks-fargate-pods.amazonaws.com
+    aws-us-gov:
+      EC2: ec2.amazonaws.com
+      EKS: eks.amazonaws.com
+      EKSFargatePods: eks-fargate-pods.amazonaws.com
+Resources:
+  LaunchTemplate:
+    Type: 'AWS::EC2::LaunchTemplate'
+    Properties:
+      LaunchTemplateData:
+        BlockDeviceMappings:
+          - DeviceName: /dev/xvda
+            Ebs:
+              Iops: 3000
+              Throughput: 125
+              VolumeSize: 20
+              VolumeType: gp3
+        KeyName: crawford
+        MetadataOptions:
+          HttpPutResponseHopLimit: 2
+          HttpTokens: optional
+        SecurityGroupIds:
+          - !ImportValue '!Sub test-service::ClusterSecurityGroupId'
+          - !Ref SSH
+        TagSpecifications:
+          - ResourceType: instance
+            Tags:
+              - Key: Name
+                Value: '!Sub test-service-Node'
+              - Key: alpha.eksctl.io/nodegroup-name
+                Value: test-service
+              - Key: alpha.eksctl.io/nodegroup-type
+                Value: managed
+      LaunchTemplateName: !Sub '${AWS::StackName}'
+  ManagedNodeGroup:
+    Type: 'AWS::EKS::Nodegroup'
+    Properties:
+      AmiType: AL2_x86_64
+      ClusterName: ucrtest-service
+      InstanceTypes:
+        - t3a.small
+      Labels:
+        alpha.eksctl.io/cluster-name: !Sub test-service
+        alpha.eksctl.io/nodegroup-name: !Sub test-service
+      LaunchTemplate:
+        Id: !Ref LaunchTemplate
+      NodeRole: !GetAtt 
+        - NodeInstanceRole
+        - Arn
+      NodegroupName: !Sub test-service
+      ScalingConfig:
+        DesiredSize: 1
+        MaxSize: 4
+        MinSize: 1
+      Subnets: !Split 
+        - ','
+        - !ImportValue '!Sub test-service::SubnetsPublic'
+      Tags:
+        alpha.eksctl.io/nodegroup-name: !Sub test-service
+        alpha.eksctl.io/nodegroup-type: managed
+  NodeInstanceRole:
+    Type: 'AWS::IAM::Role'
+    Properties:
+      AssumeRolePolicyDocument:
+        Statement:
+          - Action:
+              - 'sts:AssumeRole'
+            Effect: Allow
+            Principal:
+              Service:
+                - !FindInMap 
+                  - ServicePrincipalPartitionMap
+                  - !Ref 'AWS::Partition'
+                  - EC2
+        Version: 2012-10-17
+      ManagedPolicyArns:
+        - !Sub >-
+          arn:${AWS::Partition}:iam::aws:policy/AmazonEC2ContainerRegistryReadOnly
+        - !Sub 'arn:${AWS::Partition}:iam::aws:policy/AmazonEKSWorkerNodePolicy'
+        - !Sub 'arn:${AWS::Partition}:iam::aws:policy/AmazonEKS_CNI_Policy'
+        - !Sub 'arn:${AWS::Partition}:iam::aws:policy/IAMFullAccess'
+        - !Sub 'arn:${AWS::Partition}:iam::aws:policy/AmazonS3FullAccess'
+        - !Sub 'arn:${AWS::Partition}:iam::aws:policy/CloudWatchFullAccess'
+        - !Sub 'arn:${AWS::Partition}:iam::aws:policy/AmazonDynamoDBFullAccess'
+        - !Sub 'arn:${AWS::Partition}:iam::aws:policy/AmazonKinesisFirehoseFullAccess'
+        - !Sub 'arn:${AWS::Partition}:iam::aws:policy/AmazonESFullAccess'
+        - !Sub 'arn:${AWS::Partition}:iam::aws:policy/AWSXrayFullAccess'
+      Path: /
+      Tags:
+        - Key: Name
+          Value: !Sub '${AWS::StackName}/NodeInstanceRole'
+  SSH:
+    Type: 'AWS::EC2::SecurityGroup'
+    Properties:
+      GroupDescription: Allow SSH access
+      GroupName: !Sub '${AWS::StackName}-remoteAccess'
+      SecurityGroupIngress:
+        - CidrIp: 0.0.0.0/0
+          Description: Allow SSH access to managed worker nodes in group !Sub test-service
+          FromPort: 22
+          IpProtocol: tcp
+          ToPort: 22
+        - CidrIpv6: '::/0'
+          Description: Allow SSH access to managed worker nodes in group !Sub test-service
+          FromPort: 22
+          IpProtocol: tcp
+          ToPort: 22
+      Tags:
+        - Key: Name
+          Value: !Sub '${AWS::StackName}/SSH'
+      VpcId: !ImportValue '!Sub test-service::VPC'
